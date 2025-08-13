@@ -1,13 +1,16 @@
 // CRITICAL: Load polyfills FIRST before anything else
 // This must be the very first thing in the application
 
-// localStorage polyfill for Node.js
-class LocalStoragePolyfill {
+console.log('🔧 Loading polyfills...');
+
+// Enhanced localStorage polyfill that matches MTProto's expected interface
+class EnhancedLocalStoragePolyfill {
   constructor() {
     this.data = new Map();
-    console.log('📦 LocalStorage polyfill initialized');
+    console.log('📦 Enhanced LocalStorage polyfill initialized');
   }
 
+  // Standard localStorage methods
   getItem(key) {
     const value = this.data.get(key);
     return value !== undefined ? value : null;
@@ -34,33 +37,71 @@ class LocalStoragePolyfill {
     return this.data.size;
   }
 
-  // Additional methods that MTProto might need
+  // MTProto-specific methods
   get(key) {
+    console.log('🔍 localStorage.get() called with key:', key);
     return this.getItem(key);
   }
 
   set(key, value) {
+    console.log('🔍 localStorage.set() called with key:', key);
     this.setItem(key, value);
+  }
+
+  // Additional methods that might be needed
+  delete(key) {
+    return this.removeItem(key);
+  }
+
+  has(key) {
+    return this.data.has(key);
+  }
+
+  keys() {
+    return Array.from(this.data.keys());
+  }
+
+  values() {
+    return Array.from(this.data.values());
+  }
+
+  entries() {
+    return Array.from(this.data.entries());
   }
 }
 
 // Set up global polyfills immediately
+console.log('🔧 Setting up global polyfills...');
+
 if (typeof global !== 'undefined') {
-  global.localStorage = global.localStorage || new LocalStoragePolyfill();
-  global.sessionStorage = global.sessionStorage || new LocalStoragePolyfill();
+  // Create enhanced polyfill instances
+  const localStoragePolyfill = new EnhancedLocalStoragePolyfill();
+  const sessionStoragePolyfill = new EnhancedLocalStoragePolyfill();
   
-  // Also set on globalThis for modern Node.js
+  // Set on global
+  global.localStorage = localStoragePolyfill;
+  global.sessionStorage = sessionStoragePolyfill;
+  
+  // Set on globalThis for modern Node.js
   if (typeof globalThis !== 'undefined') {
-    globalThis.localStorage = globalThis.localStorage || global.localStorage;
-    globalThis.sessionStorage = globalThis.sessionStorage || global.sessionStorage;
+    globalThis.localStorage = localStoragePolyfill;
+    globalThis.sessionStorage = sessionStoragePolyfill;
   }
   
   // Set on window object (some libraries expect this)
   global.window = global.window || {};
-  global.window.localStorage = global.localStorage;
-  global.window.sessionStorage = global.sessionStorage;
+  global.window.localStorage = localStoragePolyfill;
+  global.window.sessionStorage = sessionStoragePolyfill;
   
-  console.log('✅ localStorage polyfill installed globally');
+  // Also set directly on process for some libraries
+  if (typeof process !== 'undefined') {
+    process.localStorage = localStoragePolyfill;
+    process.sessionStorage = sessionStoragePolyfill;
+  }
+  
+  console.log('✅ Enhanced localStorage polyfill installed globally');
+  console.log('🔍 Testing localStorage.get method:', typeof global.localStorage.get);
+  console.log('🔍 Testing localStorage.getItem method:', typeof global.localStorage.getItem);
 }
 
 // Additional browser API polyfills that MTProto might need
@@ -70,23 +111,62 @@ if (typeof global !== 'undefined') {
     createElement: () => ({}),
     getElementById: () => null,
     querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    cookie: ''
   };
   
   // Navigator polyfill
   global.navigator = global.navigator || {
-    userAgent: 'Node.js MTProto Service',
-    platform: 'Node.js'
+    userAgent: 'Node.js MTProto Service/1.0',
+    platform: 'Node.js',
+    language: 'en',
+    languages: ['en'],
+    onLine: true
   };
   
   // Location polyfill
   global.location = global.location || {
     hostname: 'localhost',
     protocol: 'https:',
-    href: 'https://localhost'
+    href: 'https://localhost',
+    origin: 'https://localhost'
   };
+  
+  // URL polyfill
+  if (!global.URL) {
+    global.URL = class URL {
+      constructor(url) {
+        this.href = url;
+        this.protocol = 'https:';
+        this.hostname = 'localhost';
+      }
+    };
+  }
+  
+  // Crypto polyfill for some edge cases
+  if (!global.crypto) {
+    const crypto = require('crypto');
+    global.crypto = {
+      getRandomValues: (arr) => {
+        const bytes = crypto.randomBytes(arr.length);
+        for (let i = 0; i < arr.length; i++) {
+          arr[i] = bytes[i];
+        }
+        return arr;
+      }
+    };
+  }
   
   console.log('✅ Additional browser API polyfills installed');
 }
+
+// Test the polyfills before proceeding
+console.log('🧪 Testing polyfills before loading MTProto...');
+console.log('✅ global.localStorage exists:', !!global.localStorage);
+console.log('✅ global.localStorage.get exists:', typeof global.localStorage.get);
+console.log('✅ global.localStorage.getItem exists:', typeof global.localStorage.getItem);
 
 // Now load other modules after polyfills are in place
 require('dotenv').config();
@@ -95,6 +175,8 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const fetch = require('node-fetch');
+
+// Import MTProto service after polyfills are ready
 const MTProtoService = require('./lib/mtproto-service');
 
 const app = express();
@@ -124,11 +206,16 @@ const limiter = rateLimit({
 app.use(limiter);
 app.use(express.json({ limit: '10mb' }));
 
-// Initialize MTProto service
+// Initialize MTProto service with enhanced error handling
 async function initializeMTProto() {
   try {
     if (!mtprotoService) {
       console.log('🚀 Initializing MTProto service...');
+      
+      // Verify polyfills one more time before creating service
+      console.log('🔍 Pre-init localStorage check:', typeof global.localStorage);
+      console.log('🔍 Pre-init localStorage.get check:', typeof global.localStorage.get);
+      
       mtprotoService = new MTProtoService();
       await mtprotoService.initialize();
       console.log('✅ MTProto service ready');
@@ -136,6 +223,7 @@ async function initializeMTProto() {
     return mtprotoService;
   } catch (error) {
     console.error('❌ MTProto initialization failed:', error);
+    console.error('❌ Error stack:', error.stack);
     throw error;
   }
 }
@@ -168,6 +256,7 @@ app.get('/api/health', async (req, res) => {
       },
       polyfills: {
         localStorage: typeof global.localStorage !== 'undefined',
+        localStorage_get: typeof global.localStorage?.get !== 'undefined',
         sessionStorage: typeof global.sessionStorage !== 'undefined',
         window: typeof global.window !== 'undefined'
       }
@@ -177,6 +266,7 @@ app.get('/api/health', async (req, res) => {
     res.status(503).json({
       status: 'error',
       error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
       timestamp: new Date().toISOString()
     });
   }
@@ -286,12 +376,13 @@ app.post('/api/send-message', validateApiKey, async (req, res) => {
     res.status(500).json({
       error: 'Failed to send message',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
       timestamp: new Date().toISOString()
     });
   }
 });
 
-// Authentication endpoints
+// Authentication endpoints with enhanced error handling
 app.post('/api/auth', validateApiKey, async (req, res) => {
   try {
     const { action, phone, code, phone_code_hash } = req.body;
@@ -302,6 +393,10 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
         valid_actions: ['send_code', 'sign_in', 'check_auth']
       });
     }
+    
+    console.log('🔐 Auth request received, action:', action);
+    console.log('🔍 localStorage available:', typeof global.localStorage);
+    console.log('🔍 localStorage.get available:', typeof global.localStorage?.get);
     
     const service = await initializeMTProto();
     
@@ -357,6 +452,7 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
     
   } catch (error) {
     console.error('❌ Auth error:', error);
+    console.error('❌ Auth error stack:', error.stack);
     
     if (error.error_message?.includes('PHONE_CODE_INVALID')) {
       return res.status(400).json({
@@ -392,7 +488,8 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
     
     res.status(500).json({
       error: 'Authentication failed',
-      details: error.message
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
@@ -447,6 +544,7 @@ app.listen(PORT, () => {
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🌐 External hostname: ${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost'}`);
   console.log(`🔧 Polyfills loaded: localStorage=${typeof global.localStorage !== 'undefined'}`);
+  console.log(`🔧 Polyfills loaded: localStorage.get=${typeof global.localStorage?.get !== 'undefined'}`);
   
   // Initialize MTProto on startup
   initializeMTProto().catch(error => {
@@ -480,4 +578,4 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-console.log('🎯 Server setup complete with polyfills, waiting for connections...');
+console.log('🎯 Server setup complete with enhanced polyfills, waiting for connections...');
