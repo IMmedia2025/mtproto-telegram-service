@@ -382,10 +382,17 @@ app.post('/api/send-message', validateApiKey, async (req, res) => {
   }
 });
 
-// Authentication endpoints with enhanced error handling
+// Replace just the /api/auth endpoint in your server.js with this version for debugging
+
+// Authentication endpoints with FULL error debugging
 app.post('/api/auth', validateApiKey, async (req, res) => {
   try {
     const { action, phone, code, phone_code_hash } = req.body;
+    
+    console.log('🔐 === AUTH REQUEST START ===');
+    console.log('🔐 Action:', action);
+    console.log('🔐 Phone:', phone);
+    console.log('🔐 Request body keys:', Object.keys(req.body));
     
     if (!action) {
       return res.status(400).json({
@@ -394,11 +401,30 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
       });
     }
     
-    console.log('🔐 Auth request received, action:', action);
-    console.log('🔍 localStorage available:', typeof global.localStorage);
-    console.log('🔍 localStorage.get available:', typeof global.localStorage?.get);
+    console.log('🔍 Pre-init checks:');
+    console.log('  - localStorage available:', typeof global.localStorage);
+    console.log('  - localStorage.get available:', typeof global.localStorage?.get);
+    console.log('  - Environment vars set:', {
+      api_id: !!process.env.TELEGRAM_API_ID,
+      api_hash: !!process.env.TELEGRAM_API_HASH,
+      phone: !!process.env.TELEGRAM_PHONE,
+      secret_key: !!process.env.API_SECRET_KEY
+    });
     
-    const service = await initializeMTProto();
+    let service;
+    try {
+      console.log('🚀 Attempting to initialize MTProto service...');
+      service = await initializeMTProto();
+      console.log('✅ MTProto service initialized successfully');
+    } catch (initError) {
+      console.error('❌ MTProto initialization failed:', initError);
+      return res.status(500).json({
+        error: 'MTProto initialization failed',
+        details: initError.message,
+        stack: initError.stack,
+        stage: 'initialization'
+      });
+    }
     
     switch (action) {
       case 'send_code':
@@ -406,58 +432,144 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
           return res.status(400).json({ error: 'Phone number required' });
         }
         
-        console.log('📱 Attempting to send code to:', phone);
-        const codeResult = await service.sendCode(phone);
-        res.json({
-          success: true,
-          phone_code_hash: codeResult.phone_code_hash,
-          message: 'Code sent to phone'
-        });
+        console.log('📱 === SEND CODE ATTEMPT ===');
+        console.log('📱 Phone number:', phone);
+        console.log('📱 Phone format valid:', /^\+\d{10,15}$/.test(phone));
+        
+        try {
+          console.log('📱 Calling service.sendCode...');
+          const codeResult = await service.sendCode(phone);
+          console.log('✅ Code sent successfully');
+          console.log('📱 Result keys:', Object.keys(codeResult));
+          console.log('📱 Phone code hash present:', !!codeResult.phone_code_hash);
+          
+          res.json({
+            success: true,
+            phone_code_hash: codeResult.phone_code_hash,
+            message: 'Code sent to phone',
+            debug: {
+              phone_formatted: phone,
+              result_keys: Object.keys(codeResult)
+            }
+          });
+        } catch (sendCodeError) {
+          console.error('❌ Send code failed:', sendCodeError);
+          console.error('❌ Send code error details:', {
+            message: sendCodeError.message,
+            error_message: sendCodeError.error_message,
+            error_code: sendCodeError.error_code,
+            stack: sendCodeError.stack,
+            name: sendCodeError.name
+          });
+          
+          // Return detailed error for debugging
+          return res.status(500).json({
+            error: 'Send code failed',
+            details: sendCodeError.message,
+            telegram_error: sendCodeError.error_message || null,
+            error_code: sendCodeError.error_code || null,
+            stage: 'send_code',
+            debug: {
+              phone: phone,
+              error_type: sendCodeError.constructor.name,
+              all_error_props: Object.keys(sendCodeError)
+            }
+          });
+        }
         break;
         
       case 'sign_in':
         if (!phone || !code || !phone_code_hash) {
           return res.status(400).json({
             error: 'Missing required fields',
-            required: ['phone', 'code', 'phone_code_hash']
+            required: ['phone', 'code', 'phone_code_hash'],
+            received: {
+              phone: !!phone,
+              code: !!code,
+              phone_code_hash: !!phone_code_hash
+            }
           });
         }
         
-        console.log('🔐 Attempting sign in for:', phone);
-        const signInResult = await service.signIn(phone, phone_code_hash, code);
-        res.json({
-          success: true,
-          message: 'Authentication successful',
-          user: {
-            id: signInResult.user.id,
-            first_name: signInResult.user.first_name,
-            username: signInResult.user.username
-          }
-        });
+        console.log('🔐 === SIGN IN ATTEMPT ===');
+        console.log('🔐 Phone:', phone);
+        console.log('🔐 Code:', code);
+        console.log('🔐 Hash present:', !!phone_code_hash);
+        
+        try {
+          const signInResult = await service.signIn(phone, phone_code_hash, code);
+          console.log('✅ Sign in successful');
+          
+          res.json({
+            success: true,
+            message: 'Authentication successful',
+            user: {
+              id: signInResult.user.id,
+              first_name: signInResult.user.first_name,
+              username: signInResult.user.username
+            }
+          });
+        } catch (signInError) {
+          console.error('❌ Sign in failed:', signInError);
+          
+          return res.status(500).json({
+            error: 'Sign in failed',
+            details: signInError.message,
+            telegram_error: signInError.error_message || null,
+            stage: 'sign_in'
+          });
+        }
         break;
         
       case 'check_auth':
-        console.log('🔍 Checking authentication status...');
-        const status = service.getStatus();
-        res.json({
-          success: true,
-          authenticated: status.authenticated,
-          status: status
-        });
+        console.log('🔍 === CHECK AUTH STATUS ===');
+        try {
+          const status = service.getStatus();
+          console.log('✅ Status retrieved:', status);
+          
+          res.json({
+            success: true,
+            authenticated: status.authenticated,
+            status: status
+          });
+        } catch (statusError) {
+          console.error('❌ Status check failed:', statusError);
+          
+          return res.status(500).json({
+            error: 'Status check failed',
+            details: statusError.message,
+            stage: 'check_auth'
+          });
+        }
         break;
         
       default:
-        res.status(400).json({ error: 'Invalid action' });
+        return res.status(400).json({ 
+          error: 'Invalid action',
+          received: action,
+          valid_actions: ['send_code', 'sign_in', 'check_auth']
+        });
     }
     
-  } catch (error) {
-    console.error('❌ Auth error:', error);
-    console.error('❌ Auth error stack:', error.stack);
+    console.log('🔐 === AUTH REQUEST END ===');
     
+  } catch (error) {
+    console.error('❌ === OUTER AUTH ERROR ===');
+    console.error('❌ Error name:', error.name);
+    console.error('❌ Error message:', error.message);
+    console.error('❌ Error stack:', error.stack);
+    console.error('❌ Error props:', Object.keys(error));
+    
+    if (error.error_message) {
+      console.error('❌ Telegram error_message:', error.error_message);
+    }
+    
+    // Handle specific MTProto errors with full details
     if (error.error_message?.includes('PHONE_CODE_INVALID')) {
       return res.status(400).json({
         error: 'Invalid verification code',
-        telegram_error: error.error_message
+        telegram_error: error.error_message,
+        stage: 'validation'
       });
     }
     
@@ -465,7 +577,8 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
       return res.status(400).json({
         error: 'Verification code expired',
         message: 'Please request a new code',
-        telegram_error: error.error_message
+        telegram_error: error.error_message,
+        stage: 'validation'
       });
     }
     
@@ -473,7 +586,8 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
       return res.status(200).json({
         success: false,
         action: 'password_required',
-        message: 'Two-factor authentication required'
+        message: 'Two-factor authentication required',
+        telegram_error: error.error_message
       });
     }
     
@@ -482,18 +596,27 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
       return res.status(429).json({
         error: 'Rate limit exceeded',
         retry_after: waitTime,
-        telegram_error: error.error_message
+        telegram_error: error.error_message,
+        stage: 'rate_limit'
       });
     }
     
+    // Generic error with full debugging info
     res.status(500).json({
       error: 'Authentication failed',
       details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      telegram_error: error.error_message || null,
+      error_code: error.error_code || null,
+      error_name: error.name,
+      stage: 'unknown',
+      debug: {
+        all_error_properties: Object.getOwnPropertyNames(error),
+        error_string: error.toString(),
+        stack_trace: error.stack
+      }
     });
   }
 });
-
 // Keep-alive scheduler (prevents sleep)
 if (process.env.NODE_ENV === 'production') {
   const keepAliveUrl = `https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost'}/ping`;
