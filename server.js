@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const fetch = require('node-fetch'); // Import node-fetch
 const MTProtoService = require('./lib/mtproto-service');
 
 const app = express();
@@ -53,7 +54,8 @@ app.get('/ping', (req, res) => {
   res.json({ 
     status: 'alive', 
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
   });
 });
 
@@ -70,10 +72,12 @@ app.get('/api/health', async (req, res) => {
       system: {
         uptime: process.uptime(),
         memory: process.memoryUsage(),
-        node_version: process.version
+        node_version: process.version,
+        environment: process.env.NODE_ENV || 'development'
       }
     });
   } catch (error) {
+    console.error('❌ Health check failed:', error);
     res.status(503).json({
       status: 'error',
       error: error.message,
@@ -94,6 +98,7 @@ function validateApiKey(req, res, next) {
   const validKey = process.env.API_SECRET_KEY;
   
   if (!validKey || apiKey !== validKey) {
+    console.warn('⚠️ Invalid API key attempt:', apiKey.substring(0, 10) + '...');
     return res.status(401).json({ error: 'Invalid API key' });
   }
   
@@ -172,6 +177,14 @@ app.post('/api/send-message', validateApiKey, async (req, res) => {
           telegram_error: error.error_message
         });
       }
+      
+      if (error.error_message.includes('AUTH_KEY_UNREGISTERED')) {
+        return res.status(401).json({
+          error: 'Authentication required',
+          message: 'Please authenticate your Telegram account first',
+          telegram_error: error.error_message
+        });
+      }
     }
     
     res.status(500).json({
@@ -202,6 +215,7 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
           return res.status(400).json({ error: 'Phone number required' });
         }
         
+        console.log('📱 Attempting to send code to:', phone);
         const codeResult = await service.sendCode(phone);
         res.json({
           success: true,
@@ -218,6 +232,7 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
           });
         }
         
+        console.log('🔐 Attempting sign in for:', phone);
         const signInResult = await service.signIn(phone, phone_code_hash, code);
         res.json({
           success: true,
@@ -231,6 +246,7 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
         break;
         
       case 'check_auth':
+        console.log('🔍 Checking authentication status...');
         const status = service.getStatus();
         res.json({
           success: true,
@@ -253,11 +269,28 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
       });
     }
     
+    if (error.error_message?.includes('PHONE_CODE_EXPIRED')) {
+      return res.status(400).json({
+        error: 'Verification code expired',
+        message: 'Please request a new code',
+        telegram_error: error.error_message
+      });
+    }
+    
     if (error.error_message?.includes('SESSION_PASSWORD_NEEDED')) {
       return res.status(200).json({
         success: false,
         action: 'password_required',
         message: 'Two-factor authentication required'
+      });
+    }
+    
+    if (error.error_message?.includes('FLOOD_WAIT')) {
+      const waitTime = parseInt(error.error_message.split('_')[2]) || 60;
+      return res.status(429).json({
+        error: 'Rate limit exceeded',
+        retry_after: waitTime,
+        telegram_error: error.error_message
       });
     }
     
@@ -270,11 +303,24 @@ app.post('/api/auth', validateApiKey, async (req, res) => {
 
 // Keep-alive scheduler (prevents sleep)
 if (process.env.NODE_ENV === 'production') {
+  const keepAliveUrl = `https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost'}/ping`;
+  
   setInterval(() => {
     // Self-ping to keep service alive
-    const url = `http://localhost:${PORT}/ping`;
-    fetch(url).catch(err => console.log('Keep-alive ping failed:', err.message));
+    fetch(keepAliveUrl)
+      .then(response => {
+        if (response.ok) {
+          console.log('✅ Keep-alive ping successful');
+        } else {
+          console.warn('⚠️ Keep-alive ping failed:', response.status);
+        }
+      })
+      .catch(err => {
+        console.warn('⚠️ Keep-alive ping error:', err.message);
+      });
   }, 14 * 60 * 1000); // Every 14 minutes
+  
+  console.log('🔄 Keep-alive scheduler started');
 }
 
 // Error handling
@@ -303,6 +349,7 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 MTProto service running on port ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🌐 External hostname: ${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost'}`);
   
   // Initialize MTProto on startup
   initializeMTProto().catch(error => {
@@ -313,10 +360,27 @@ app.listen(PORT, () => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('📴 Received SIGTERM, shutting down gracefully');
+  if (mtprotoService) {
+    mtprotoService.cleanup();
+  }
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
   console.log('📴 Received SIGINT, shutting down gracefully');
+  if (mtprotoService) {
+    mtprotoService.cleanup();
+  }
   process.exit(0);
 });
+
+process.on('uncaughtException', (error) => {
+  console.error('💥 Uncaught Exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+console.log('🎯 Server setup complete, waiting for connections...');
